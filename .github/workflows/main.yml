@@ -1,0 +1,43 @@
+name: SkinPlace Monitor 24/7
+
+on:
+  schedule:
+    # Автоматический перезапуск каждые 5 часов 35 минут
+    - cron: '35 */5 * * *'
+  workflow_dispatch: # Кнопка ручного запуска во вкладке Actions
+
+concurrency:
+  group: skinplace-bot-group
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Скачивание файлов репозитория
+        uses: actions/checkout@v4
+
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Установка библиотек и браузера Chromium
+        run: |
+          pip install playwright aiogram
+          playwright install --with-deps chromium
+
+      - name: Запуск мониторинга скинов
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: python skinplace_bot.py
+
+      - name: Сохранение базы просмотренных скинов (state.json)
+        if: always()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add state.json || true
+          git diff --staged --quiet || (git pull --rebase && git commit -m "Auto-update state.json" && git push)
