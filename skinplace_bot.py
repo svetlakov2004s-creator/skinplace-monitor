@@ -2,9 +2,10 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import time
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs, urlunparse
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.types import Message, FSInputFile
@@ -12,7 +13,11 @@ from playwright.async_api import async_playwright, Response
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-CHECK_INTERVAL = 25
+# === МЕДЛЕННЫЙ И БЕЗОПАСНЫЙ РЕЖИМ ДЛЯ SKINPLACE ===
+DELAY_BETWEEN_PAGES = (30, 45)  # Случайная пауза между открытием страниц (30-45 сек)
+CHECK_INTERVAL = 120            # Пауза после прохода всего списка (2 минуты)
+RATE_LIMIT_COOLDOWN = 180       # Если выскочило "Слишком много попыток" — ждем 3 минуты
+
 MAX_RUN_SECONDS = 5.5 * 3600
 STATE_FILE = "state.json"
 
@@ -51,11 +56,9 @@ def slug_to_pretty_name(slug: str) -> str:
 
 
 def replace_exterior_in_url(raw_url: str, exterior: str) -> str:
-    """Меняет только параметр exterior в полной ссылке, сохраняя id и pattern."""
     parsed = urlparse(raw_url)
     qs = parse_qs(parsed.query, keep_blank_values=True)
     qs["exterior"] = [exterior]
-    # Собираем строку запроса (плюсы для пробелов как на сайте: Minimal+Wear)
     pairs = []
     for k, vals in qs.items():
         val_str = str(vals[0]).replace(" ", "+")
@@ -65,18 +68,14 @@ def replace_exterior_in_url(raw_url: str, exterior: str) -> str:
 
 
 def build_urls_for_target(target: dict) -> list[str]:
-    """Строит ссылки для проверки MW и FT, сохраняя id и pattern если они есть."""
     slug = target["slug"]
     base_url = target.get("url") or f"https://skin.place/ru/buy-cs2-skins/{slug}"
 
-    # Если в сохраненной ссылке уже есть id=, аккуратно меняем в ней exterior
     if "id=" in base_url:
         return [
             replace_exterior_in_url(base_url, "Minimal Wear"),
             replace_exterior_in_url(base_url, "Field-Tested"),
         ]
-
-    # Если id нет — сначала открываем чистый URL без параметров (чтобы не получить 404)
     return [f"https://skin.place/ru/buy-cs2-skins/{slug}"]
 
 
@@ -122,7 +121,8 @@ async def cmd_start(message: Message):
 
     skins_text = "\n".join([f"{i+1}. {t['name']}" for i, t in enumerate(targets)]) or "Список пуст"
     await message.answer(
-        "✅ <b>Бот активен!</b>\n\n"
+        "✅ <b>Бот активен (Медленный анти-бан режим)!</b>\n\n"
+        f"⏱ <b>Пауза между страницами:</b> {DELAY_BETWEEN_PAGES[0]}–{DELAY_BETWEEN_PAGES[1]} сек.\n"
         f"🔍 <b>Скинов в отслеживании ({len(targets)}):</b>\n{skins_text}\n\n"
         "🎯 <b>Фильтры Float:</b> MW (0.07–0.09) и FT (0.15–0.19)\n\n"
         "⚙️ <b>Команды:</b>\n"
@@ -186,12 +186,11 @@ async def cmd_add(message: Message, command: CommandObject):
     full_url = raw_input if raw_input.startswith("http") else f"https://skin.place/ru/buy-cs2-skins/{slug}"
     pretty_name = slug_to_pretty_name(slug)
 
-    # Если скин уже есть — обновляем ему полную ссылку с ID
     for t in targets:
         if t["slug"] == slug:
             t["url"] = full_url
             save_state()
-            await message.answer(f"🔄 Ссылка для <b>{pretty_name}</b> успешно обновлена!\n<code>{full_url}</code>", parse_mode="HTML")
+            await message.answer(f"🔄 Ссылка для <b>{pretty_name}</b> обновлена!\n<code>{full_url}</code>", parse_mode="HTML")
             return
 
     targets.append({"name": pretty_name, "slug": slug, "url": full_url})
@@ -224,21 +223,32 @@ def is_good_float(float_val: float) -> tuple[bool, str]:
 
 
 async def accept_cookies_if_present(page):
-    """Закрывает окно Cookiebot ('Allow all'), если оно появилось."""
     try:
         btn = await page.query_selector("#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, button:has-text('Allow all')")
         if btn:
             await btn.click()
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
     except Exception:
         pass
 
 
-async def auto_scroll(page):
+async def is_rate_limited(page) -> bool:
     try:
-        for _ in range(4):
-            await page.evaluate("window.scrollBy(0, 800)")
-            await asyncio.sleep(0.7)
+        body_text = await page.inner_text("body")
+        if "Слишком много попыток" in body_text or "Too Many Requests" in body_text or "Too many attempts" in body_text:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def auto_scroll(page):
+    """Небольшой плавный скролл, чтобы не улетать в подвал сайта."""
+    try:
+        for _ in range(2):
+            await page.evaluate("window.scrollBy(0, 400)")
+            await asyncio.sleep(1.2)
+        await page.evaluate("window.scrollTo(0, 100)")
     except Exception:
         pass
 
@@ -284,11 +294,9 @@ def extract_items_from_json(data, found_list=None) -> list[dict]:
 
 
 async def parse_dom_fallback(page) -> list[dict]:
-    """Универсальный поиск карточек скинов на странице."""
     items = []
-    # 1. Пробуем найти ссылки с id=
     links = await page.query_selector_all("a[href*='id=']")
-    for idx, link in enumerate(links):
+    for link in links:
         href = await link.get_attribute("href") or ""
         text = await link.inner_text() or ""
         id_match = re.search(r"id=(\d+)", href)
@@ -306,7 +314,6 @@ async def parse_dom_fallback(page) -> list[dict]:
                 "is_stattrak": is_st,
             })
 
-    # 2. Если карточки сверстаны через <div> без тега <a> (как в таблице со скриншота)
     if not items:
         raw_cards = await page.evaluate("""() => {
             const results = [];
@@ -400,16 +407,23 @@ async def monitor_skinplace():
                     for url in build_urls_for_target(target):
                         intercepted_items.clear()
                         try:
-                            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
-                            await asyncio.sleep(2.5)
+                            await page.goto(url, wait_until="domcontentloaded", timeout=35000)
+                            # Даем тяжелой странице спокойно прогрузить все скрипты
+                            await asyncio.sleep(5.0)
                             await accept_cookies_if_present(page)
 
-                            # Если в текущем URL появился id= после редиректа сайта, запоминаем его!
+                            # Если сайт все равно показал лимит — отдыхаем 3 минуты
+                            if await is_rate_limited(page):
+                                logging.warning(f"Лимит запросов! Ждем {RATE_LIMIT_COOLDOWN} сек...")
+                                await asyncio.sleep(RATE_LIMIT_COOLDOWN)
+                                await page.reload(wait_until="domcontentloaded", timeout=35000)
+                                await asyncio.sleep(5.0)
+
                             if "id=" in page.url and "id=" not in target.get("url", ""):
                                 target["url"] = page.url
 
                             await auto_scroll(page)
-                            await asyncio.sleep(1.5)
+                            await asyncio.sleep(2.0)
 
                             dom_items = await parse_dom_fallback(page)
 
@@ -422,7 +436,7 @@ async def monitor_skinplace():
                                     if it.get("is_stattrak"):
                                         merged_items[iid]["is_stattrak"] = True
 
-                            logging.info(f"Проверен {target['name']} -> найдено лотов на странице: {len(merged_items)}")
+                            logging.info(f"Проверен {target['name']} -> найдено лотов: {len(merged_items)}")
 
                             for item in merged_items.values():
                                 item_id = f"{target['slug']}_{item['id']}"
@@ -439,14 +453,21 @@ async def monitor_skinplace():
                                             target["name"], url, item, wear_label
                                         )
 
+                            # Большая человеческая пауза 30-45 секунд перед следующей страницей
+                            pause = random.uniform(*DELAY_BETWEEN_PAGES)
+                            logging.info(f"Пауза {pause:.1f} сек. до следующей страницы...")
+                            await asyncio.sleep(pause)
+
                         except Exception as e:
                             logging.warning(f"Ошибка при проверке {url}: {e}")
+                            await asyncio.sleep(20)
 
                 if is_cold_start:
                     logging.info(f"Первичная база собрана (подходящих лотов: {len(seen_ids)}). Мониторим новинки!")
                     is_cold_start = False
 
                 save_state()
+                logging.info(f"Круг завершен. Отдых {CHECK_INTERVAL} сек...")
                 await asyncio.sleep(CHECK_INTERVAL)
 
         finally:
