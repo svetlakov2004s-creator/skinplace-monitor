@@ -23,32 +23,36 @@
       "slug": "ak-47-aphrodite"
     },
     {
-      "name": "SSG 08 | Rapid Transit",
-      "slug": "ssg-08-rapid-transit"
+      "name": "Desert Eagle | Mulberry",
+      "slug": "desert-eagle-mulberry"
     },
     {
-      "name": "SSG 08 | Big Iron",
-      "slug": "ssg-08-big-iron"
+      "name": "M4A4 | Desolate Space",
+      "slug": "m4a4-desolate-space"
     },
     {
-      "name": "M4A1-S | Party Animal",
-      "slug": "m4a1-s-party-animal"
+      "name": "USP-S | Bleeding Edge",
+      "slug": "usp-s-bleeding-edge"
     },
     {
-      "name": "MP9 | Food Chain",
-      "slug": "mp9-food-chain"
+      "name": "MP9 | Mount Fuji",
+      "slug": "mp9-mount-fuji"
     },
     {
-      "name": "USP-S | Jawbreaker",
-      "slug": "usp-s-jawbreaker"
+      "name": "USP-S | Cortex",
+      "slug": "usp-s-cortex"
     },
     {
-      "name": "AK-47 | Searing Rage",
-      "slug": "ak-47-searing-rage"
+      "name": "MAC-10 | Disco Tech",
+      "slug": "mac-10-disco-tech"
     },
     {
-      "name": "Desert Eagle | Crimson Web",
-      "slug": "desert-eagle-crimson-web"
+      "name": "AK-47 | Crane Flight",
+      "slug": "ak-47-crane-flight"
+    },
+    {
+      "name": "Tec-9 | Decimator",
+      "slug": "tec-9-decimator"
     }
   ]
 }
