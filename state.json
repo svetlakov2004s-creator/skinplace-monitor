@@ -1,0 +1,54 @@
+{
+  "chat_id": null,
+  "seen_ids": [],
+  "targets": [
+    {
+      "name": "Glock-18 | Vogue",
+      "slug": "glock-18-vogue"
+    },
+    {
+      "name": "Glock-18 | Shinobu",
+      "slug": "glock-18-shinobu"
+    },
+    {
+      "name": "AWP | Duality",
+      "slug": "awp-duality"
+    },
+    {
+      "name": "AWP | Exothermic",
+      "slug": "awp-exothermic"
+    },
+    {
+      "name": "AK-47 | Aphrodite",
+      "slug": "ak-47-aphrodite"
+    },
+    {
+      "name": "SSG 08 | Rapid Transit",
+      "slug": "ssg-08-rapid-transit"
+    },
+    {
+      "name": "SSG 08 | Big Iron",
+      "slug": "ssg-08-big-iron"
+    },
+    {
+      "name": "M4A1-S | Party Animal",
+      "slug": "m4a1-s-party-animal"
+    },
+    {
+      "name": "MP9 | Food Chain",
+      "slug": "mp9-food-chain"
+    },
+    {
+      "name": "USP-S | Jawbreaker",
+      "slug": "usp-s-jawbreaker"
+    },
+    {
+      "name": "AK-47 | Searing Rage",
+      "slug": "ak-47-searing-rage"
+    },
+    {
+      "name": "Desert Eagle | Crimson Web",
+      "slug": "desert-eagle-crimson-web"
+    }
+  ]
+}
