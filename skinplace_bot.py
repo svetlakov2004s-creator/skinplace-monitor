@@ -11,8 +11,8 @@ from playwright.async_api import async_playwright, Response
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-CHECK_INTERVAL = 25          # Пауза между кругами проверки (в секундах)
-MAX_RUN_SECONDS = 5.5 * 3600 # 5.5 часов до перезапуска
+CHECK_INTERVAL = 25
+MAX_RUN_SECONDS = 5.5 * 3600
 STATE_FILE = "state.json"
 
 DEFAULT_TARGETS = [
@@ -31,7 +31,7 @@ seen_ids = set()
 active_chat_id = None
 targets = []
 start_time = time.time()
-test_screenshot_sent = False  # Флаг разовой отправки тестового скриншота
+current_page = None  # Ссылка на активную страницу браузера для команды /screenshot
 
 
 def slug_to_pretty_name(slug: str) -> str:
@@ -98,28 +98,48 @@ async def cmd_start(message: Message):
 
     skins_text = "\n".join([f"{i+1}. {t['name']}" for i, t in enumerate(targets)]) or "Список пуст"
     await message.answer(
-        "✅ <b>Бот активен и мониторит скины!</b>\n\n"
-        f"🔍 <b>Текущий список ({len(targets)}):</b>\n{skins_text}\n\n"
-        "🎯 <b>Фильтр Float:</b>\n"
-        "• Minimal Wear: <code>0.07 – 0.09</code>\n"
-        "• Field-Tested: <code>0.15 – 0.19</code>\n\n"
-        "⚙️ <b>Команды:</b> <code>/list</code>, <code>/add ссылка</code>, <code>/del номер</code>",
+        "✅ <b>Бот активен!</b>\n\n"
+        f"🔍 <b>Скинов в отслеживании:</b> {len(targets)}\n{skins_text}\n\n"
+        "🎯 <b>Фильтры Float:</b> MW (0.07–0.09) и FT (0.15–0.19)\n\n"
+        "⚙️ <b>Команды:</b>\n"
+        "• <code>/screenshot</code> — прислать фото того, что видит браузер\n"
+        "• <code>/list</code> — список скинов\n"
+        "• <code>/add ссылка</code> — добавить скин\n"
+        "• <code>/del номер</code> — удалить скин",
         parse_mode="HTML",
     )
+
+
+@dp.message(Command("screenshot"))
+async def cmd_screenshot(message: Message):
+    global current_page
+    if not current_page:
+        await message.answer("⏳ Браузер еще запускается или выполняет переход. Подождите 10 секунд и повторите.")
+        return
+
+    msg = await message.answer("📸 Делаю скриншот...")
+    try:
+        img_path = "live_view.png"
+        await current_page.screenshot(path=img_path)
+        current_url = current_page.url
+        await message.answer_photo(
+            photo=FSInputFile(img_path),
+            caption=f"🌐 <b>Текущий экран:</b>\n<code>{current_url}</code>",
+            parse_mode="HTML"
+        )
+        await msg.delete()
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка создания скриншота: {e}")
 
 
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
     if not targets:
-        await message.answer("📭 Список пуст. Добавьте скин через: <code>/add ссылка</code>", parse_mode="HTML")
+        await message.answer("📭 Список пуст.", parse_mode="HTML")
         return
 
     lines = [f"<b>{i+1}.</b> {t['name']} (<code>{t['slug']}</code>)" for i, t in enumerate(targets)]
-    await message.answer(
-        "📋 <b>Отслеживаемые скины:</b>\n\n" + "\n".join(lines) +
-        "\n\nУдаление: <code>/del номер</code>",
-        parse_mode="HTML"
-    )
+    await message.answer("📋 <b>Отслеживаемые скины:</b>\n\n" + "\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("add"))
@@ -133,7 +153,7 @@ async def cmd_add(message: Message, command: CommandObject):
     slug = match.group(1).lower() if match else raw_input.lower()
 
     if not re.match(r"^[a-z0-9\-]+$", slug):
-        await message.answer("❌ Не удалось распознать ссылку.")
+        await message.answer("❌ Неверный формат ссылки.")
         return
 
     if any(t["slug"] == slug for t in targets):
@@ -143,29 +163,23 @@ async def cmd_add(message: Message, command: CommandObject):
     pretty_name = slug_to_pretty_name(slug)
     targets.append({"name": pretty_name, "slug": slug})
     save_state()
-
-    await message.answer(
-        f"✅ <b>Скин добавлен!</b>\n\n"
-        f"🔫 <b>Название:</b> {pretty_name}\n"
-        f"🔗 <code>{slug}</code>",
-        parse_mode="HTML"
-    )
+    await message.answer(f"✅ Добавлен: <b>{pretty_name}</b>", parse_mode="HTML")
 
 
 @dp.message(Command("del"))
 async def cmd_del(message: Message, command: CommandObject):
     if not command.args or not command.args.strip().isdigit():
-        await message.answer("⚠️ Укажите номер из /list: <code>/del 1</code>", parse_mode="HTML")
+        await message.answer("⚠️ Укажите номер: <code>/del 1</code>", parse_mode="HTML")
         return
 
     idx = int(command.args.strip()) - 1
     if idx < 0 or idx >= len(targets):
-        await message.answer(f"❌ Номер не найден. Всего скинов: {len(targets)}")
+        await message.answer(f"❌ Неверный номер. Всего скинов: {len(targets)}")
         return
 
     removed = targets.pop(idx)
     save_state()
-    await message.answer(f"🗑 Скин <b>{removed['name']}</b> удален!", parse_mode="HTML")
+    await message.answer(f"🗑 Удален: <b>{removed['name']}</b>", parse_mode="HTML")
 
 
 def is_good_float(float_val: float) -> tuple[bool, str]:
@@ -189,9 +203,7 @@ def detect_stattrak_in_dict(d: dict) -> bool:
     if d.get("is_stattrak") or d.get("stattrak") or d.get("isStattrak") or d.get("stat_trak"):
         return True
     name_str = str(d.get("market_hash_name") or d.get("name") or d.get("full_name") or "")
-    if "stattrak" in name_str.lower() or re.search(r"\bST\b", name_str):
-        return True
-    return False
+    return bool("stattrak" in name_str.lower() or re.search(r"\bST\b", name_str))
 
 
 def extract_items_from_json(data, found_list=None) -> list[dict]:
@@ -280,7 +292,7 @@ async def send_telegram_alert(skin_name: str, slug: str, item: dict, wear_label:
 
 
 async def monitor_skinplace():
-    global test_screenshot_sent
+    global current_page
     load_state()
     is_cold_start = len(seen_ids) == 0
 
@@ -294,6 +306,7 @@ async def monitor_skinplace():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         )
         page = await context.new_page()
+        current_page = page
         intercepted_items = []
 
         async def handle_response(response: Response):
@@ -318,22 +331,6 @@ async def monitor_skinplace():
                         try:
                             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
                             await asyncio.sleep(2.5)
-
-                            # Отправка тестового скриншота при первом открытии страницы
-                            if not test_screenshot_sent and active_chat_id:
-                                try:
-                                    screenshot_path = "debug_page.png"
-                                    await page.screenshot(path=screenshot_path)
-                                    await bot.send_photo(
-                                        chat_id=active_chat_id,
-                                        photo=FSInputFile(screenshot_path),
-                                        caption=f"📸 <b>Тестовый скриншот из облака:</b>\n{target['name']}\n<code>{url}</code>",
-                                        parse_mode="HTML"
-                                    )
-                                    test_screenshot_sent = True
-                                    logging.info("Тестовый скриншот успешно отправлен в Telegram.")
-                                except Exception as e:
-                                    logging.error(f"Не удалось отправить скриншот: {e}")
 
                             await auto_scroll(page)
                             await asyncio.sleep(1.5)
