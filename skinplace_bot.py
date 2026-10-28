@@ -10,13 +10,13 @@ from aiogram.types import Message
 from playwright.async_api import async_playwright, Response
 
 # Токен берется автоматически из GitHub Secrets
-BOT_TOKEN = os.getenv("BOT_TOKEN", "9142267256:AAE8eQfrqwVJN6zAmh_hC-tJEOJepA77EV4")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 CHECK_INTERVAL = 25          # Пауза между кругами проверки (в секундах)
 MAX_RUN_SECONDS = 5.5 * 3600 # Работаем 5.5 часов до планового перезапуска
 STATE_FILE = "state.json"
 
-# Стартовый список по умолчанию (используется при самом первом запуске)
+# Стартовый список по умолчанию
 DEFAULT_TARGETS = [
     {"name": "Glock-18 | Vogue", "slug": "glock-18-vogue"},
     {"name": "Glock-18 | Shinobu", "slug": "glock-18-shinobu"},
@@ -103,7 +103,7 @@ async def cmd_start(message: Message):
 
     skins_text = "\n".join([f"{i+1}. {t['name']}" for i, t in enumerate(targets)]) or "Список пуст"
     await message.answer(
-        "✅ <b>Бот активен и мониторит скины!</b>\n\n"
+        "✅ <b>Бот активен и мониторит скины (включая StatTrak™)!</b>\n\n"
         f"🔍 <b>Текущий список ({len(targets)}):</b>\n{skins_text}\n\n"
         "🎯 <b>Фильтр Float:</b>\n"
         "• Minimal Wear: <code>0.07 – 0.09</code>\n"
@@ -141,7 +141,6 @@ async def cmd_add(message: Message, command: CommandObject):
         return
 
     raw_input = command.args.strip()
-    # Извлекаем slug скина из ссылки (или принимаем напрямую, если написали просто ak-47-redline)
     match = re.search(r"buy-cs2-skins/([a-zA-Z0-9\-]+)", raw_input)
     slug = match.group(1).lower() if match else raw_input.lower()
 
@@ -149,7 +148,6 @@ async def cmd_add(message: Message, command: CommandObject):
         await message.answer("❌ Не удалось распознать ссылку со SkinPlace. Пришлите обычную ссылку на страницу скина.")
         return
 
-    # Проверяем, нет ли его уже в списке
     if any(t["slug"] == slug for t in targets):
         await message.answer(f"ℹ️ Скин <code>{slug}</code> уже есть в списке отслеживания!", parse_mode="HTML")
         return
@@ -162,7 +160,7 @@ async def cmd_add(message: Message, command: CommandObject):
         f"✅ <b>Скин добавлен в мониторинг!</b>\n\n"
         f"🔫 <b>Название:</b> {pretty_name}\n"
         f"🔗 <b>ID в каталоге:</b> <code>{slug}</code>\n"
-        f"📊 Будут проверяться качества <b>MW (≤ 0.09)</b> и <b>FT (≤ 0.19)</b>.",
+        f"📊 Проверяются обычные и <b>StatTrak™</b> версии в качествах <b>MW (≤ 0.09)</b> и <b>FT (≤ 0.19)</b>.",
         parse_mode="HTML"
     )
 
@@ -187,7 +185,7 @@ async def cmd_del(message: Message, command: CommandObject):
     await message.answer(f"🗑 Скин <b>{removed['name']}</b> удален из мониторинга!", parse_mode="HTML")
 
 
-# ================= ЛОГИКА ПАРСИНГА =================
+# ================= ЛОГИКА ПАРСИНГА И АВТОСКРОЛЛА =================
 
 def is_good_float(float_val: float) -> tuple[bool, str]:
     if 0.07 <= float_val <= 0.09:
@@ -195,6 +193,26 @@ def is_good_float(float_val: float) -> tuple[bool, str]:
     if 0.15 <= float_val <= 0.19:
         return True, "Field-Tested (FT ≤ 0.19)"
     return False, ""
+
+
+async def auto_scroll(page):
+    """Плавная прокрутка страницы вниз для подгрузки всех лотов (включая StatTrak внизу)."""
+    try:
+        for _ in range(3):
+            await page.evaluate("window.scrollBy(0, 900)")
+            await asyncio.sleep(0.8)
+    except Exception:
+        pass
+
+
+def detect_stattrak_in_dict(d: dict) -> bool:
+    """Определяет наличие StatTrak по полям JSON-объекта."""
+    if d.get("is_stattrak") or d.get("stattrak") or d.get("isStattrak") or d.get("stat_trak"):
+        return True
+    name_str = str(d.get("market_hash_name") or d.get("name") or d.get("full_name") or "")
+    if "stattrak" in name_str.lower() or re.search(r"\bST\b", name_str):
+        return True
+    return False
 
 
 def extract_items_from_json(data, found_list=None) -> list[dict]:
@@ -215,6 +233,7 @@ def extract_items_from_json(data, found_list=None) -> list[dict]:
                         "float": float_num,
                         "price": pr,
                         "pattern": data.get("pattern") or data.get("paintseed") or "—",
+                        "is_stattrak": detect_stattrak_in_dict(data),
                     })
             except (ValueError, TypeError):
                 pass
@@ -243,12 +262,16 @@ async def parse_dom_fallback(page) -> list[dict]:
         price_match = re.search(r"([\$€₽]\s?\d+[.,]?\d*|\d+[.,]?\d*\s?[\$€₽])", text)
         pattern_match = re.search(r"pattern=(\d+)", href)
 
+        # Проверяем наличие плашки "ST |" или надписи "StatTrak" прямо в карточке скина
+        is_st = bool(re.search(r"\bST\s*\||StatTrak|\bST\s+(MW|FT|FN|WW|BS)\b", text, re.IGNORECASE))
+
         if id_match and float_match:
             items.append({
                 "id": id_match.group(1),
                 "float": float(float_match.group(1)),
                 "price": price_match.group(0).strip() if price_match else "См. на сайте",
                 "pattern": pattern_match.group(1) if pattern_match else "—",
+                "is_stattrak": is_st,
             })
     return items
 
@@ -263,9 +286,11 @@ async def send_telegram_alert(skin_name: str, slug: str, item: dict, wear_label:
         f"?id={item['id']}&pattern={item['pattern']}&exterior={exterior_param}"
     )
 
+    st_badge = " 🟠 <b>[StatTrak™]</b>" if item.get("is_stattrak") else ""
+
     msg = (
         f"🎯 <b>Найден новый скин с нужным Float!</b>\n\n"
-        f"🔫 <b>{skin_name}</b>\n"
+        f"🔫 <b>{skin_name}</b>{st_badge}\n"
         f"✨ <b>Качество:</b> {wear_label}\n"
         f"📊 <b>Float:</b> <code>{item['float']}</code>\n"
         f"🎨 <b>Pattern:</b> <code>{item['pattern']}</code>\n"
@@ -308,7 +333,6 @@ async def monitor_skinplace():
 
         try:
             while time.time() - start_time < MAX_RUN_SECONDS:
-                # Делаем копию текущего списка, чтобы не было ошибки, если вы добавите скин во время цикла
                 current_targets = list(targets)
 
                 for target in current_targets:
@@ -316,12 +340,25 @@ async def monitor_skinplace():
                         intercepted_items.clear()
                         try:
                             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
-                            await asyncio.sleep(4)
+                            await asyncio.sleep(2.5)
+                            
+                            # Прокручиваем список вниз, чтобы подгрузились все StatTrak лоты
+                            await auto_scroll(page)
+                            await asyncio.sleep(1.5)
 
                             dom_items = await parse_dom_fallback(page)
-                            all_found = {it["id"]: it for it in (intercepted_items + dom_items)}.values()
+                            
+                            # Объединяем данные из JSON и HTML (если в одном из них нашелся флаг StatTrak — сохраняем его)
+                            merged_items = {}
+                            for it in (intercepted_items + dom_items):
+                                iid = it["id"]
+                                if iid not in merged_items:
+                                    merged_items[iid] = it
+                                else:
+                                    if it.get("is_stattrak"):
+                                        merged_items[iid]["is_stattrak"] = True
 
-                            for item in all_found:
+                            for item in merged_items.values():
                                 item_id = item["id"]
                                 item_float = item["float"]
 
