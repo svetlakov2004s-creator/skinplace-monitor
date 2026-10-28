@@ -13,10 +13,9 @@ from playwright.async_api import async_playwright, Response
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# === МЕДЛЕННЫЙ И БЕЗОПАСНЫЙ РЕЖИМ ДЛЯ SKINPLACE ===
-DELAY_BETWEEN_PAGES = (30, 45)  # Случайная пауза между открытием страниц (30-45 сек)
-CHECK_INTERVAL = 120            # Пауза после прохода всего списка (2 минуты)
-RATE_LIMIT_COOLDOWN = 180       # Если выскочило "Слишком много попыток" — ждем 3 минуты
+DELAY_BETWEEN_PAGES = (30, 45)
+CHECK_INTERVAL = 120
+RATE_LIMIT_COOLDOWN = 180
 
 MAX_RUN_SECONDS = 5.5 * 3600
 STATE_FILE = "state.json"
@@ -243,7 +242,6 @@ async def is_rate_limited(page) -> bool:
 
 
 async def auto_scroll(page):
-    """Небольшой плавный скролл, чтобы не улетать в подвал сайта."""
     try:
         for _ in range(2):
             await page.evaluate("window.scrollBy(0, 400)")
@@ -301,14 +299,17 @@ async def parse_dom_fallback(page) -> list[dict]:
         text = await link.inner_text() or ""
         id_match = re.search(r"id=(\d+)", href)
         float_match = re.search(r"\b(0\.\d{3,14})\b", text)
-        price_match = re.search(r"([\$€₽]\s?\d+[.,]?\d*|\d+[.,]?\d*\s?[\$€₽])", text)
         pattern_match = re.search(r"pattern=(\d+)", href)
         is_st = bool(re.search(r"\bST\s*\||StatTrak|\bST\s+(MW|FT|FN|WW|BS)\b", text, re.IGNORECASE))
 
         if id_match and float_match:
+            fl_str = float_match.group(1)
+            clean_text = text.replace(fl_str, "")
+            price_match = re.search(r"[\$€₽][ \t]*\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?[ \t]*[\$€₽]", clean_text)
+
             items.append({
                 "id": id_match.group(1),
-                "float": float(float_match.group(1)),
+                "float": float(fl_str),
                 "price": price_match.group(0).strip() if price_match else "См. на сайте",
                 "pattern": pattern_match.group(1) if pattern_match else "—",
                 "is_stattrak": is_st,
@@ -335,8 +336,11 @@ async def parse_dom_fallback(page) -> list[dict]:
             if fl_str in seen_floats:
                 continue
             seen_floats.add(fl_str)
-            pr_m = re.search(r"([\$€₽]\s?\d+[.,]?\d*|\d+[.,]?\d*\s?[\$€₽])", txt)
+
+            clean_txt = txt.replace(fl_str, "")
+            pr_m = re.search(r"[\$€₽][ \t]*\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?[ \t]*[\$€₽]", clean_txt)
             is_st = bool(re.search(r"\bST\s*\||StatTrak", txt, re.IGNORECASE))
+
             items.append({
                 "id": f"float_{fl_str}",
                 "float": float(fl_str),
@@ -408,11 +412,9 @@ async def monitor_skinplace():
                         intercepted_items.clear()
                         try:
                             await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-                            # Даем тяжелой странице спокойно прогрузить все скрипты
                             await asyncio.sleep(5.0)
                             await accept_cookies_if_present(page)
 
-                            # Если сайт все равно показал лимит — отдыхаем 3 минуты
                             if await is_rate_limited(page):
                                 logging.warning(f"Лимит запросов! Ждем {RATE_LIMIT_COOLDOWN} сек...")
                                 await asyncio.sleep(RATE_LIMIT_COOLDOWN)
@@ -453,7 +455,6 @@ async def monitor_skinplace():
                                             target["name"], url, item, wear_label
                                         )
 
-                            # Большая человеческая пауза 30-45 секунд перед следующей страницей
                             pause = random.uniform(*DELAY_BETWEEN_PAGES)
                             logging.info(f"Пауза {pause:.1f} сек. до следующей страницы...")
                             await asyncio.sleep(pause)
