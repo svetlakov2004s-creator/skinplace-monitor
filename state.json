@@ -1,6 +1,18 @@
 {
   "chat_id": 1866881027,
-  "seen_ids": [],
+  "seen_ids": [
+    "desert-eagle-mulberry_float_0.07190379",
+    "tec-9-decimator_float_0.1781",
+    "desert-eagle-mulberry_float_0.0719",
+    "desert-eagle-mulberry_float_0.0870",
+    "usp-s-cortex_float_0.1887",
+    "desert-eagle-mulberry_float_0.0803",
+    "usp-s-cortex_float_0.1690",
+    "desert-eagle-mulberry_float_0.0783",
+    "mp9-mount-fuji_float_0.0763",
+    "mp9-mount-fuji_float_0.1646",
+    "usp-s-cortex_float_0.1899"
+  ],
   "targets": [
     {
       "name": "Glock-18 | Vogue",
@@ -8,11 +20,13 @@
     },
     {
       "name": "Glock-18 | Shinobu",
-      "slug": "glock-18-shinobu"
+      "slug": "glock-18-shinobu",
+      "url": "https://skin.place/ru/buy-cs2-skins/glock-18-shinobu?id=337377308&pattern=753&exterior=Minimal+Wear"
     },
     {
       "name": "AWP | Duality",
-      "slug": "awp-duality"
+      "slug": "awp-duality",
+      "url": "https://skin.place/ru/buy-cs2-skins/awp-duality?id=317481927&pattern=74&exterior=Minimal+Wear"
     },
     {
       "name": "AWP | Exothermic",
@@ -20,11 +34,13 @@
     },
     {
       "name": "AK-47 | Aphrodite",
-      "slug": "ak-47-aphrodite"
+      "slug": "ak-47-aphrodite",
+      "url": "https://skin.place/ru/buy-cs2-skins/ak-47-aphrodite?id=350651914&pattern=534&exterior=Minimal+Wear"
     },
     {
       "name": "Desert Eagle | Mulberry",
-      "slug": "desert-eagle-mulberry"
+      "slug": "desert-eagle-mulberry",
+      "url": "https://skin.place/ru/buy-cs2-skins/desert-eagle-mulberry?id=350751251&pattern=567&exterior=Minimal+Wear"
     },
     {
       "name": "M4A4 | Desolate Space",
@@ -36,11 +52,13 @@
     },
     {
       "name": "MP9 | Mount Fuji",
-      "slug": "mp9-mount-fuji"
+      "slug": "mp9-mount-fuji",
+      "url": "https://skin.place/ru/buy-cs2-skins/mp9-mount-fuji?id=321226506&pattern=882&exterior=Minimal+Wear"
     },
     {
       "name": "USP-S | Cortex",
-      "slug": "usp-s-cortex"
+      "slug": "usp-s-cortex",
+      "url": "https://skin.place/ru/buy-cs2-skins/usp-s-cortex?id=350652476&pattern=453&exterior=Minimal+Wear"
     },
     {
       "name": "MAC-10 | Disco Tech",
@@ -48,11 +66,23 @@
     },
     {
       "name": "Desert Eagle | Crimson Web",
-      "slug": "desert-eagle-crimson-web"
+      "slug": "desert-eagle-crimson-web",
+      "url": "https://skin.place/ru/buy-cs2-skins/desert-eagle-crimson-web?id=331201139&pattern=395&exterior=Minimal+Wear"
     },
     {
       "name": "Tec-9 | Decimator",
-      "slug": "tec-9-decimator"
+      "slug": "tec-9-decimator",
+      "url": "https://skin.place/ru/buy-cs2-skins/tec-9-decimator?id=325587284&pattern=450&exterior=Minimal+Wear"
+    },
+    {
+      "name": "MP9 | Food Chain",
+      "slug": "mp9-food-chain",
+      "url": "https://skin.place/ru/buy-cs2-skins/mp9-food-chain?pattern=420&exterior=Minimal+Wear"
+    },
+    {
+      "name": "AK-47 | Searing Rage",
+      "slug": "ak-47-searing-rage",
+      "url": "https://skin.place/ru/buy-cs2-skins/ak-47-searing-rage?id=350828133&pattern=312&exterior=Minimal+Wear"
     }
   ]
 }
