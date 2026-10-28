@@ -341,6 +341,7 @@ async def monitor_skinplace():
                         try:
                             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
                             await asyncio.sleep(2.5)
+                            await page.screenshot(path="debug_page.png")
                             
                             # Прокручиваем список вниз, чтобы подгрузились все StatTrak лоты
                             await auto_scroll(page)
