@@ -6,17 +6,15 @@ import re
 import time
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandStart, CommandObject
-from aiogram.types import Message
+from aiogram.types import Message, FSInputFile
 from playwright.async_api import async_playwright, Response
 
-# Токен берется автоматически из GitHub Secrets
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 CHECK_INTERVAL = 25          # Пауза между кругами проверки (в секундах)
-MAX_RUN_SECONDS = 5.5 * 3600 # Работаем 5.5 часов до планового перезапуска
+MAX_RUN_SECONDS = 5.5 * 3600 # 5.5 часов до перезапуска
 STATE_FILE = "state.json"
 
-# Стартовый список по умолчанию
 DEFAULT_TARGETS = [
     {"name": "Glock-18 | Vogue", "slug": "glock-18-vogue"},
     {"name": "Glock-18 | Shinobu", "slug": "glock-18-shinobu"},
@@ -33,10 +31,10 @@ seen_ids = set()
 active_chat_id = None
 targets = []
 start_time = time.time()
+test_screenshot_sent = False  # Флаг разовой отправки тестового скриншота
 
 
 def slug_to_pretty_name(slug: str) -> str:
-    """Превращает 'glock-18-vogue' в 'Glock-18 | Vogue'."""
     weapons = {
         "ak-47": "AK-47", "glock-18": "Glock-18", "awp": "AWP",
         "m4a1-s": "M4A1-S", "m4a4": "M4A4", "usp-s": "USP-S",
@@ -52,7 +50,6 @@ def slug_to_pretty_name(slug: str) -> str:
 
 
 def build_urls(slug: str) -> list[str]:
-    """Генерирует ссылки сразу на оба качества: MW и FT."""
     return [
         f"https://skin.place/ru/buy-cs2-skins/{slug}?exterior=Minimal+Wear",
         f"https://skin.place/ru/buy-cs2-skins/{slug}?exterior=Field-Tested",
@@ -68,7 +65,7 @@ def load_state():
                 active_chat_id = data.get("chat_id")
                 seen_ids = set(data.get("seen_ids", []))
                 targets = data.get("targets", DEFAULT_TARGETS)
-                logging.info(f"База загружена: скинов в списке={len(targets)}, просмотрено лотов={len(seen_ids)}")
+                logging.info(f"База загружена: Chat ID={active_chat_id}, скинов={len(targets)}")
                 return
         except Exception as e:
             logging.warning(f"Ошибка чтения state.json: {e}")
@@ -93,8 +90,6 @@ def save_state():
         logging.error(f"Ошибка сохранения state.json: {e}")
 
 
-# ================= КОМАНДЫ TELEGRAM =================
-
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     global active_chat_id
@@ -103,15 +98,12 @@ async def cmd_start(message: Message):
 
     skins_text = "\n".join([f"{i+1}. {t['name']}" for i, t in enumerate(targets)]) or "Список пуст"
     await message.answer(
-        "✅ <b>Бот активен и мониторит скины (включая StatTrak™)!</b>\n\n"
+        "✅ <b>Бот активен и мониторит скины!</b>\n\n"
         f"🔍 <b>Текущий список ({len(targets)}):</b>\n{skins_text}\n\n"
         "🎯 <b>Фильтр Float:</b>\n"
         "• Minimal Wear: <code>0.07 – 0.09</code>\n"
         "• Field-Tested: <code>0.15 – 0.19</code>\n\n"
-        "⚙️ <b>Управление списком:</b>\n"
-        "• <code>/list</code> — показать список скинов\n"
-        "• <code>/add ссылка</code> — добавить новый скин\n"
-        "• <code>/del номер</code> — удалить скин по номеру",
+        "⚙️ <b>Команды:</b> <code>/list</code>, <code>/add ссылка</code>, <code>/del номер</code>",
         parse_mode="HTML",
     )
 
@@ -119,13 +111,13 @@ async def cmd_start(message: Message):
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
     if not targets:
-        await message.answer("📭 Список отслеживания пуст. Добавьте скин командой:\n<code>/add ссылка_на_скин</code>", parse_mode="HTML")
+        await message.answer("📭 Список пуст. Добавьте скин через: <code>/add ссылка</code>", parse_mode="HTML")
         return
 
     lines = [f"<b>{i+1}.</b> {t['name']} (<code>{t['slug']}</code>)" for i, t in enumerate(targets)]
     await message.answer(
         "📋 <b>Отслеживаемые скины:</b>\n\n" + "\n".join(lines) +
-        "\n\nЧтобы удалить скин, отправьте <code>/del номер</code> (например: <code>/del 2</code>)",
+        "\n\nУдаление: <code>/del номер</code>",
         parse_mode="HTML"
     )
 
@@ -133,11 +125,7 @@ async def cmd_list(message: Message):
 @dp.message(Command("add"))
 async def cmd_add(message: Message, command: CommandObject):
     if not command.args:
-        await message.answer(
-            "⚠️ Укажите ссылку после команды!\n"
-            "Пример:\n<code>/add https://skin.place/ru/buy-cs2-skins/ak-47-redline?exterior=Field-Tested</code>",
-            parse_mode="HTML"
-        )
+        await message.answer("⚠️ Укажите ссылку: <code>/add https://skin.place/...</code>", parse_mode="HTML")
         return
 
     raw_input = command.args.strip()
@@ -145,11 +133,11 @@ async def cmd_add(message: Message, command: CommandObject):
     slug = match.group(1).lower() if match else raw_input.lower()
 
     if not re.match(r"^[a-z0-9\-]+$", slug):
-        await message.answer("❌ Не удалось распознать ссылку со SkinPlace. Пришлите обычную ссылку на страницу скина.")
+        await message.answer("❌ Не удалось распознать ссылку.")
         return
 
     if any(t["slug"] == slug for t in targets):
-        await message.answer(f"ℹ️ Скин <code>{slug}</code> уже есть в списке отслеживания!", parse_mode="HTML")
+        await message.answer(f"ℹ️ Скин <code>{slug}</code> уже есть в списке!", parse_mode="HTML")
         return
 
     pretty_name = slug_to_pretty_name(slug)
@@ -157,10 +145,9 @@ async def cmd_add(message: Message, command: CommandObject):
     save_state()
 
     await message.answer(
-        f"✅ <b>Скин добавлен в мониторинг!</b>\n\n"
+        f"✅ <b>Скин добавлен!</b>\n\n"
         f"🔫 <b>Название:</b> {pretty_name}\n"
-        f"🔗 <b>ID в каталоге:</b> <code>{slug}</code>\n"
-        f"📊 Проверяются обычные и <b>StatTrak™</b> версии в качествах <b>MW (≤ 0.09)</b> и <b>FT (≤ 0.19)</b>.",
+        f"🔗 <code>{slug}</code>",
         parse_mode="HTML"
     )
 
@@ -168,24 +155,18 @@ async def cmd_add(message: Message, command: CommandObject):
 @dp.message(Command("del"))
 async def cmd_del(message: Message, command: CommandObject):
     if not command.args or not command.args.strip().isdigit():
-        await message.answer(
-            "⚠️ Укажите номер скина из списка <code>/list</code>!\n"
-            "Пример: <code>/del 1</code>",
-            parse_mode="HTML"
-        )
+        await message.answer("⚠️ Укажите номер из /list: <code>/del 1</code>", parse_mode="HTML")
         return
 
     idx = int(command.args.strip()) - 1
     if idx < 0 or idx >= len(targets):
-        await message.answer(f"❌ Неверный номер. В списке сейчас {len(targets)} скинов (посмотрите через /list).")
+        await message.answer(f"❌ Номер не найден. Всего скинов: {len(targets)}")
         return
 
     removed = targets.pop(idx)
     save_state()
-    await message.answer(f"🗑 Скин <b>{removed['name']}</b> удален из мониторинга!", parse_mode="HTML")
+    await message.answer(f"🗑 Скин <b>{removed['name']}</b> удален!", parse_mode="HTML")
 
-
-# ================= ЛОГИКА ПАРСИНГА И АВТОСКРОЛЛА =================
 
 def is_good_float(float_val: float) -> tuple[bool, str]:
     if 0.07 <= float_val <= 0.09:
@@ -196,7 +177,6 @@ def is_good_float(float_val: float) -> tuple[bool, str]:
 
 
 async def auto_scroll(page):
-    """Плавная прокрутка страницы вниз для подгрузки всех лотов (включая StatTrak внизу)."""
     try:
         for _ in range(3):
             await page.evaluate("window.scrollBy(0, 900)")
@@ -206,7 +186,6 @@ async def auto_scroll(page):
 
 
 def detect_stattrak_in_dict(d: dict) -> bool:
-    """Определяет наличие StatTrak по полям JSON-объекта."""
     if d.get("is_stattrak") or d.get("stattrak") or d.get("isStattrak") or d.get("stat_trak"):
         return True
     name_str = str(d.get("market_hash_name") or d.get("name") or d.get("full_name") or "")
@@ -261,8 +240,6 @@ async def parse_dom_fallback(page) -> list[dict]:
         float_match = re.search(r"\b(0\.\d{3,14})\b", text)
         price_match = re.search(r"([\$€₽]\s?\d+[.,]?\d*|\d+[.,]?\d*\s?[\$€₽])", text)
         pattern_match = re.search(r"pattern=(\d+)", href)
-
-        # Проверяем наличие плашки "ST |" или надписи "StatTrak" прямо в карточке скина
         is_st = bool(re.search(r"\bST\s*\||StatTrak|\bST\s+(MW|FT|FN|WW|BS)\b", text, re.IGNORECASE))
 
         if id_match and float_match:
@@ -285,7 +262,6 @@ async def send_telegram_alert(skin_name: str, slug: str, item: dict, wear_label:
         f"https://skin.place/ru/buy-cs2-skins/{slug}"
         f"?id={item['id']}&pattern={item['pattern']}&exterior={exterior_param}"
     )
-
     st_badge = " 🟠 <b>[StatTrak™]</b>" if item.get("is_stattrak") else ""
 
     msg = (
@@ -300,10 +276,11 @@ async def send_telegram_alert(skin_name: str, slug: str, item: dict, wear_label:
     try:
         await bot.send_message(chat_id=active_chat_id, text=msg, parse_mode="HTML")
     except Exception as e:
-        logging.error(f"Ошибка отправки в Telegram: {e}")
+        logging.error(f"Ошибка отправки сообщения в Telegram: {e}")
 
 
 async def monitor_skinplace():
+    global test_screenshot_sent
     load_state()
     is_cold_start = len(seen_ids) == 0
 
@@ -341,15 +318,28 @@ async def monitor_skinplace():
                         try:
                             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
                             await asyncio.sleep(2.5)
-                            await page.screenshot(path="debug_page.png")
-                            
-                            # Прокручиваем список вниз, чтобы подгрузились все StatTrak лоты
+
+                            # Отправка тестового скриншота при первом открытии страницы
+                            if not test_screenshot_sent and active_chat_id:
+                                try:
+                                    screenshot_path = "debug_page.png"
+                                    await page.screenshot(path=screenshot_path)
+                                    await bot.send_photo(
+                                        chat_id=active_chat_id,
+                                        photo=FSInputFile(screenshot_path),
+                                        caption=f"📸 <b>Тестовый скриншот из облака:</b>\n{target['name']}\n<code>{url}</code>",
+                                        parse_mode="HTML"
+                                    )
+                                    test_screenshot_sent = True
+                                    logging.info("Тестовый скриншот успешно отправлен в Telegram.")
+                                except Exception as e:
+                                    logging.error(f"Не удалось отправить скриншот: {e}")
+
                             await auto_scroll(page)
                             await asyncio.sleep(1.5)
 
                             dom_items = await parse_dom_fallback(page)
-                            
-                            # Объединяем данные из JSON и HTML (если в одном из них нашелся флаг StatTrak — сохраняем его)
+
                             merged_items = {}
                             for it in (intercepted_items + dom_items):
                                 iid = it["id"]
