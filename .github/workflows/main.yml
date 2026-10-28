@@ -4,11 +4,14 @@ on:
   schedule:
     # Автоматический перезапуск каждые 5 часов 35 минут
     - cron: '35 */5 * * *'
-  workflow_dispatch: # Кнопка ручного запуска во вкладке Actions
+  workflow_dispatch:
 
 concurrency:
   group: skinplace-bot-group
   cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
   monitor:
@@ -40,4 +43,6 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add state.json || true
-          git diff --staged --quiet || (git pull --rebase && git commit -m "Auto-update state.json" && git push)
+          git diff --staged --quiet || git commit -m "Auto-update state.json"
+          git pull --rebase -X theirs origin main || true
+          git push origin main || true
