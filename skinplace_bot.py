@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.types import Message, FSInputFile
@@ -16,11 +17,11 @@ MAX_RUN_SECONDS = 5.5 * 3600
 STATE_FILE = "state.json"
 
 DEFAULT_TARGETS = [
-    {"name": "Glock-18 | Vogue", "slug": "glock-18-vogue"},
-    {"name": "Glock-18 | Shinobu", "slug": "glock-18-shinobu"},
-    {"name": "AWP | Duality", "slug": "awp-duality"},
-    {"name": "AWP | Exothermic", "slug": "awp-exothermic"},
-    {"name": "AK-47 | Aphrodite", "slug": "ak-47-aphrodite"},
+    {"name": "Glock-18 | Vogue", "slug": "glock-18-vogue", "url": "https://skin.place/ru/buy-cs2-skins/glock-18-vogue"},
+    {"name": "Glock-18 | Shinobu", "slug": "glock-18-shinobu", "url": "https://skin.place/ru/buy-cs2-skins/glock-18-shinobu"},
+    {"name": "AWP | Duality", "slug": "awp-duality", "url": "https://skin.place/ru/buy-cs2-skins/awp-duality"},
+    {"name": "AWP | Exothermic", "slug": "awp-exothermic", "url": "https://skin.place/ru/buy-cs2-skins/awp-exothermic"},
+    {"name": "AK-47 | Aphrodite", "slug": "ak-47-aphrodite", "url": "https://skin.place/ru/buy-cs2-skins/ak-47-aphrodite"},
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -31,7 +32,7 @@ seen_ids = set()
 active_chat_id = None
 targets = []
 start_time = time.time()
-current_page = None  # Ссылка на активную страницу браузера для команды /screenshot
+current_page = None
 
 
 def slug_to_pretty_name(slug: str) -> str:
@@ -49,11 +50,34 @@ def slug_to_pretty_name(slug: str) -> str:
     return slug.replace("-", " ").title()
 
 
-def build_urls(slug: str) -> list[str]:
-    return [
-        f"https://skin.place/ru/buy-cs2-skins/{slug}?exterior=Minimal+Wear",
-        f"https://skin.place/ru/buy-cs2-skins/{slug}?exterior=Field-Tested",
-    ]
+def replace_exterior_in_url(raw_url: str, exterior: str) -> str:
+    """Меняет только параметр exterior в полной ссылке, сохраняя id и pattern."""
+    parsed = urlparse(raw_url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs["exterior"] = [exterior]
+    # Собираем строку запроса (плюсы для пробелов как на сайте: Minimal+Wear)
+    pairs = []
+    for k, vals in qs.items():
+        val_str = str(vals[0]).replace(" ", "+")
+        pairs.append(f"{k}={val_str}")
+    new_query = "&".join(pairs)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
+
+def build_urls_for_target(target: dict) -> list[str]:
+    """Строит ссылки для проверки MW и FT, сохраняя id и pattern если они есть."""
+    slug = target["slug"]
+    base_url = target.get("url") or f"https://skin.place/ru/buy-cs2-skins/{slug}"
+
+    # Если в сохраненной ссылке уже есть id=, аккуратно меняем в ней exterior
+    if "id=" in base_url:
+        return [
+            replace_exterior_in_url(base_url, "Minimal Wear"),
+            replace_exterior_in_url(base_url, "Field-Tested"),
+        ]
+
+    # Если id нет — сначала открываем чистый URL без параметров (чтобы не получить 404)
+    return [f"https://skin.place/ru/buy-cs2-skins/{slug}"]
 
 
 def load_state():
@@ -99,12 +123,12 @@ async def cmd_start(message: Message):
     skins_text = "\n".join([f"{i+1}. {t['name']}" for i, t in enumerate(targets)]) or "Список пуст"
     await message.answer(
         "✅ <b>Бот активен!</b>\n\n"
-        f"🔍 <b>Скинов в отслеживании:</b> {len(targets)}\n{skins_text}\n\n"
+        f"🔍 <b>Скинов в отслеживании ({len(targets)}):</b>\n{skins_text}\n\n"
         "🎯 <b>Фильтры Float:</b> MW (0.07–0.09) и FT (0.15–0.19)\n\n"
         "⚙️ <b>Команды:</b>\n"
-        "• <code>/screenshot</code> — прислать фото того, что видит браузер\n"
+        "• <code>/screenshot</code> — фото экрана браузера\n"
         "• <code>/list</code> — список скинов\n"
-        "• <code>/add ссылка</code> — добавить скин\n"
+        "• <code>/add полная_ссылка</code> — добавить или обновить скин\n"
         "• <code>/del номер</code> — удалить скин",
         parse_mode="HTML",
     )
@@ -114,7 +138,7 @@ async def cmd_start(message: Message):
 async def cmd_screenshot(message: Message):
     global current_page
     if not current_page:
-        await message.answer("⏳ Браузер еще запускается или выполняет переход. Подождите 10 секунд и повторите.")
+        await message.answer("⏳ Браузер еще запускается. Подождите 10 секунд.")
         return
 
     msg = await message.answer("📸 Делаю скриншот...")
@@ -129,7 +153,7 @@ async def cmd_screenshot(message: Message):
         )
         await msg.delete()
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка создания скриншота: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("list"))
@@ -138,14 +162,17 @@ async def cmd_list(message: Message):
         await message.answer("📭 Список пуст.", parse_mode="HTML")
         return
 
-    lines = [f"<b>{i+1}.</b> {t['name']} (<code>{t['slug']}</code>)" for i, t in enumerate(targets)]
+    lines = []
+    for i, t in enumerate(targets):
+        has_id = "✅ полная ссылка" if "id=" in t.get("url", "") else "⚠️ без ID"
+        lines.append(f"<b>{i+1}.</b> {t['name']} ({has_id})")
     await message.answer("📋 <b>Отслеживаемые скины:</b>\n\n" + "\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("add"))
 async def cmd_add(message: Message, command: CommandObject):
     if not command.args:
-        await message.answer("⚠️ Укажите ссылку: <code>/add https://skin.place/...</code>", parse_mode="HTML")
+        await message.answer("⚠️ Пришлите полную ссылку со страницы скина:\n<code>/add https://skin.place/ru/buy-cs2-skins/...</code>", parse_mode="HTML")
         return
 
     raw_input = command.args.strip()
@@ -156,14 +183,20 @@ async def cmd_add(message: Message, command: CommandObject):
         await message.answer("❌ Неверный формат ссылки.")
         return
 
-    if any(t["slug"] == slug for t in targets):
-        await message.answer(f"ℹ️ Скин <code>{slug}</code> уже есть в списке!", parse_mode="HTML")
-        return
-
+    full_url = raw_input if raw_input.startswith("http") else f"https://skin.place/ru/buy-cs2-skins/{slug}"
     pretty_name = slug_to_pretty_name(slug)
-    targets.append({"name": pretty_name, "slug": slug})
+
+    # Если скин уже есть — обновляем ему полную ссылку с ID
+    for t in targets:
+        if t["slug"] == slug:
+            t["url"] = full_url
+            save_state()
+            await message.answer(f"🔄 Ссылка для <b>{pretty_name}</b> успешно обновлена!\n<code>{full_url}</code>", parse_mode="HTML")
+            return
+
+    targets.append({"name": pretty_name, "slug": slug, "url": full_url})
     save_state()
-    await message.answer(f"✅ Добавлен: <b>{pretty_name}</b>", parse_mode="HTML")
+    await message.answer(f"✅ Добавлен: <b>{pretty_name}</b>\n🔗 <code>{full_url}</code>", parse_mode="HTML")
 
 
 @dp.message(Command("del"))
@@ -190,11 +223,22 @@ def is_good_float(float_val: float) -> tuple[bool, str]:
     return False, ""
 
 
+async def accept_cookies_if_present(page):
+    """Закрывает окно Cookiebot ('Allow all'), если оно появилось."""
+    try:
+        btn = await page.query_selector("#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, button:has-text('Allow all')")
+        if btn:
+            await btn.click()
+            await asyncio.sleep(0.5)
+    except Exception:
+        pass
+
+
 async def auto_scroll(page):
     try:
-        for _ in range(3):
-            await page.evaluate("window.scrollBy(0, 900)")
-            await asyncio.sleep(0.8)
+        for _ in range(4):
+            await page.evaluate("window.scrollBy(0, 800)")
+            await asyncio.sleep(0.7)
     except Exception:
         pass
 
@@ -213,16 +257,16 @@ def extract_items_from_json(data, found_list=None) -> list[dict]:
     if isinstance(data, dict):
         fl = data.get("float") or data.get("paintwear") or data.get("float_value") or data.get("wear")
         pr = data.get("price") or data.get("cost") or data.get("amount")
-        item_id = data.get("id") or data.get("item_id") or data.get("asset_id")
+        item_id = data.get("id") or data.get("item_id") or data.get("asset_id") or data.get("skin_id")
 
-        if fl is not None and pr is not None and item_id is not None:
+        if fl is not None and item_id is not None:
             try:
                 float_num = float(fl)
                 if 0.0 < float_num < 1.0:
                     found_list.append({
                         "id": str(item_id),
                         "float": float_num,
-                        "price": pr,
+                        "price": pr if pr is not None else "См. на сайте",
                         "pattern": data.get("pattern") or data.get("paintseed") or "—",
                         "is_stattrak": detect_stattrak_in_dict(data),
                     })
@@ -240,14 +284,13 @@ def extract_items_from_json(data, found_list=None) -> list[dict]:
 
 
 async def parse_dom_fallback(page) -> list[dict]:
+    """Универсальный поиск карточек скинов на странице."""
     items = []
+    # 1. Пробуем найти ссылки с id=
     links = await page.query_selector_all("a[href*='id=']")
-    for link in links:
-        href = await link.get_attribute("href")
-        text = await link.inner_text()
-        if not href or not text:
-            continue
-
+    for idx, link in enumerate(links):
+        href = await link.get_attribute("href") or ""
+        text = await link.inner_text() or ""
         id_match = re.search(r"id=(\d+)", href)
         float_match = re.search(r"\b(0\.\d{3,14})\b", text)
         price_match = re.search(r"([\$€₽]\s?\d+[.,]?\d*|\d+[.,]?\d*\s?[\$€₽])", text)
@@ -262,18 +305,46 @@ async def parse_dom_fallback(page) -> list[dict]:
                 "pattern": pattern_match.group(1) if pattern_match else "—",
                 "is_stattrak": is_st,
             })
+
+    # 2. Если карточки сверстаны через <div> без тега <a> (как в таблице со скриншота)
+    if not items:
+        raw_cards = await page.evaluate("""() => {
+            const results = [];
+            const elements = document.querySelectorAll('div, tr, li');
+            for (const el of elements) {
+                const txt = el.innerText || '';
+                if (txt.length > 10 && txt.length < 250 && /\\b(FN|MW|FT|WW|BS)\\b/.test(txt) && /\\b0\\.\\d{4,10}\\b/.test(txt)) {
+                    results.push(txt);
+                }
+            }
+            return results;
+        }""")
+        seen_floats = set()
+        for txt in raw_cards:
+            fl_m = re.search(r"\b(0\.\d{4,10})\b", txt)
+            if not fl_m:
+                continue
+            fl_str = fl_m.group(1)
+            if fl_str in seen_floats:
+                continue
+            seen_floats.add(fl_str)
+            pr_m = re.search(r"([\$€₽]\s?\d+[.,]?\d*|\d+[.,]?\d*\s?[\$€₽])", txt)
+            is_st = bool(re.search(r"\bST\s*\||StatTrak", txt, re.IGNORECASE))
+            items.append({
+                "id": f"float_{fl_str}",
+                "float": float(fl_str),
+                "price": pr_m.group(0).strip() if pr_m else "См. на сайте",
+                "pattern": "—",
+                "is_stattrak": is_st,
+            })
+
     return items
 
 
-async def send_telegram_alert(skin_name: str, slug: str, item: dict, wear_label: str):
+async def send_telegram_alert(skin_name: str, target_url: str, item: dict, wear_label: str):
     if not active_chat_id:
         return
 
-    exterior_param = "Minimal+Wear" if "MW" in wear_label else "Field-Tested"
-    direct_url = (
-        f"https://skin.place/ru/buy-cs2-skins/{slug}"
-        f"?id={item['id']}&pattern={item['pattern']}&exterior={exterior_param}"
-    )
     st_badge = " 🟠 <b>[StatTrak™]</b>" if item.get("is_stattrak") else ""
 
     msg = (
@@ -283,12 +354,12 @@ async def send_telegram_alert(skin_name: str, slug: str, item: dict, wear_label:
         f"📊 <b>Float:</b> <code>{item['float']}</code>\n"
         f"🎨 <b>Pattern:</b> <code>{item['pattern']}</code>\n"
         f"💰 <b>Цена:</b> {item['price']}\n\n"
-        f"🔗 <a href='{direct_url}'>Открыть лот на SkinPlace</a>"
+        f"🔗 <a href='{target_url}'>Открыть на SkinPlace</a>"
     )
     try:
         await bot.send_message(chat_id=active_chat_id, text=msg, parse_mode="HTML")
     except Exception as e:
-        logging.error(f"Ошибка отправки сообщения в Telegram: {e}")
+        logging.error(f"Ошибка отправки в Telegram: {e}")
 
 
 async def monitor_skinplace():
@@ -302,7 +373,7 @@ async def monitor_skinplace():
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
         )
         context = await browser.new_context(
-            viewport={"width": 1366, "height": 768},
+            viewport={"width": 1366, "height": 900},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         )
         page = await context.new_page()
@@ -326,11 +397,16 @@ async def monitor_skinplace():
                 current_targets = list(targets)
 
                 for target in current_targets:
-                    for url in build_urls(target["slug"]):
+                    for url in build_urls_for_target(target):
                         intercepted_items.clear()
                         try:
                             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
                             await asyncio.sleep(2.5)
+                            await accept_cookies_if_present(page)
+
+                            # Если в текущем URL появился id= после редиректа сайта, запоминаем его!
+                            if "id=" in page.url and "id=" not in target.get("url", ""):
+                                target["url"] = page.url
 
                             await auto_scroll(page)
                             await asyncio.sleep(1.5)
@@ -346,8 +422,10 @@ async def monitor_skinplace():
                                     if it.get("is_stattrak"):
                                         merged_items[iid]["is_stattrak"] = True
 
+                            logging.info(f"Проверен {target['name']} -> найдено лотов на странице: {len(merged_items)}")
+
                             for item in merged_items.values():
-                                item_id = item["id"]
+                                item_id = f"{target['slug']}_{item['id']}"
                                 item_float = item["float"]
 
                                 ok, wear_label = is_good_float(item_float)
@@ -358,14 +436,14 @@ async def monitor_skinplace():
                                     seen_ids.add(item_id)
                                     if not is_cold_start:
                                         await send_telegram_alert(
-                                            target["name"], target["slug"], item, wear_label
+                                            target["name"], url, item, wear_label
                                         )
 
                         except Exception as e:
                             logging.warning(f"Ошибка при проверке {url}: {e}")
 
                 if is_cold_start:
-                    logging.info(f"Первичная база собрана ({len(seen_ids)} скинов). Мониторим новинки!")
+                    logging.info(f"Первичная база собрана (подходящих лотов: {len(seen_ids)}). Мониторим новинки!")
                     is_cold_start = False
 
                 save_state()
