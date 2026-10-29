@@ -13,9 +13,10 @@ from playwright.async_api import async_playwright, Response
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-DELAY_BETWEEN_PAGES = (30, 45)
-CHECK_INTERVAL = 120
-RATE_LIMIT_COOLDOWN = 180
+# === НАСТРОЙКИ ТАЙМИНГОВ И АНТИ-БАНА ===
+DELAY_BETWEEN_PAGES = (30, 45)  # Случайная пауза между открытием страниц (30-45 сек)
+CHECK_INTERVAL = 120            # Пауза после прохода всего списка (2 минуты)
+RATE_LIMIT_COOLDOWN = 180       # Пауза при плашке "Слишком много попыток" (3 минуты)
 
 MAX_RUN_SECONDS = 5.5 * 3600
 STATE_FILE = "state.json"
@@ -96,7 +97,7 @@ def load_state():
 
 def save_state():
     try:
-        recent_ids = list(seen_ids)[-2000:]
+        recent_ids = list(seen_ids)[-3000:]
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -120,7 +121,7 @@ async def cmd_start(message: Message):
 
     skins_text = "\n".join([f"{i+1}. {t['name']}" for i, t in enumerate(targets)]) or "Список пуст"
     await message.answer(
-        "✅ <b>Бот активен (Медленный анти-бан режим)!</b>\n\n"
+        "✅ <b>Бот активен (Глубокий скролл + точные цены)!</b>\n\n"
         f"⏱ <b>Пауза между страницами:</b> {DELAY_BETWEEN_PAGES[0]}–{DELAY_BETWEEN_PAGES[1]} сек.\n"
         f"🔍 <b>Скинов в отслеживании ({len(targets)}):</b>\n{skins_text}\n\n"
         "🎯 <b>Фильтры Float:</b> MW (0.07–0.09) и FT (0.15–0.19)\n\n"
@@ -241,12 +242,25 @@ async def is_rate_limited(page) -> bool:
     return False
 
 
-async def auto_scroll(page):
+async def auto_scroll(page, max_scrolls=10):
+    """
+    Адаптивный глубокий скролл: прокручивает каталог вниз шагами по 1200 пикселей
+    для подгрузки 100-200 скинов. Если список закончился раньше — останавливается сам.
+    """
     try:
-        for _ in range(2):
-            await page.evaluate("window.scrollBy(0, 400)")
+        previous_height = await page.evaluate("document.body.scrollHeight")
+        for _ in range(max_scrolls):
+            await page.evaluate("window.scrollBy(0, 1200)")
             await asyncio.sleep(1.2)
-        await page.evaluate("window.scrollTo(0, 100)")
+
+            current_height = await page.evaluate("document.body.scrollHeight")
+            if current_height == previous_height:
+                # Достигнут конец списка карточек
+                break
+            previous_height = current_height
+
+        # Возвращаем экран к началу каталога
+        await page.evaluate("window.scrollTo(0, 150)")
     except Exception:
         pass
 
@@ -258,13 +272,25 @@ def detect_stattrak_in_dict(d: dict) -> bool:
     return bool("stattrak" in name_str.lower() or re.search(r"\bST\b", name_str))
 
 
+def format_json_price(pr) -> str:
+    """Форматирует цену из JSON, добавляя знак $, если пришло просто число."""
+    if pr is None:
+        return "См. на сайте"
+    pr_str = str(pr).strip()
+    if not pr_str:
+        return "См. на сайте"
+    if any(sym in pr_str for sym in ("$", "€", "₽", "USD", "EUR", "RUB")):
+        return pr_str
+    return f"$ {pr_str}"
+
+
 def extract_items_from_json(data, found_list=None) -> list[dict]:
     if found_list is None:
         found_list = []
 
     if isinstance(data, dict):
         fl = data.get("float") or data.get("paintwear") or data.get("float_value") or data.get("wear")
-        pr = data.get("price") or data.get("cost") or data.get("amount")
+        pr = data.get("price") or data.get("cost") or data.get("amount") or data.get("price_usd")
         item_id = data.get("id") or data.get("item_id") or data.get("asset_id") or data.get("skin_id")
 
         if fl is not None and item_id is not None:
@@ -274,7 +300,7 @@ def extract_items_from_json(data, found_list=None) -> list[dict]:
                     found_list.append({
                         "id": str(item_id),
                         "float": float_num,
-                        "price": pr if pr is not None else "См. на сайте",
+                        "price": format_json_price(pr),
                         "pattern": data.get("pattern") or data.get("paintseed") or "—",
                         "is_stattrak": detect_stattrak_in_dict(data),
                     })
@@ -291,6 +317,12 @@ def extract_items_from_json(data, found_list=None) -> list[dict]:
     return found_list
 
 
+PRICE_REGEX = re.compile(
+    r"([\$€₽][ \t]*\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?[ \t]*(?:[\$€₽]|USD|EUR|RUB))",
+    re.IGNORECASE
+)
+
+
 async def parse_dom_fallback(page) -> list[dict]:
     items = []
     links = await page.query_selector_all("a[href*='id=']")
@@ -304,8 +336,20 @@ async def parse_dom_fallback(page) -> list[dict]:
 
         if id_match and float_match:
             fl_str = float_match.group(1)
+            # Удаляем float из текста, чтобы его цифры не путались с ценой
             clean_text = text.replace(fl_str, "")
-            price_match = re.search(r"[\$€₽][ \t]*\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?[ \t]*[\$€₽]", clean_text)
+            price_match = PRICE_REGEX.search(clean_text)
+
+            # Если внутри <a> цены нет, проверяем родительский контейнер карточки
+            if not price_match:
+                try:
+                    parent_text = await link.evaluate(
+                        "el => (el.closest('div, li, tr') || el.parentElement)?.innerText || ''"
+                    )
+                    parent_clean = parent_text.replace(fl_str, "")
+                    price_match = PRICE_REGEX.search(parent_clean)
+                except Exception:
+                    pass
 
             items.append({
                 "id": id_match.group(1),
@@ -321,7 +365,7 @@ async def parse_dom_fallback(page) -> list[dict]:
             const elements = document.querySelectorAll('div, tr, li');
             for (const el of elements) {
                 const txt = el.innerText || '';
-                if (txt.length > 10 && txt.length < 250 && /\\b(FN|MW|FT|WW|BS)\\b/.test(txt) && /\\b0\\.\\d{4,10}\\b/.test(txt)) {
+                if (txt.length > 10 && txt.length < 300 && /\\b(FN|MW|FT|WW|BS)\\b/.test(txt) && /\\b0\\.\\d{4,10}\\b/.test(txt)) {
                     results.push(txt);
                 }
             }
@@ -338,7 +382,7 @@ async def parse_dom_fallback(page) -> list[dict]:
             seen_floats.add(fl_str)
 
             clean_txt = txt.replace(fl_str, "")
-            pr_m = re.search(r"[\$€₽][ \t]*\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?[ \t]*[\$€₽]", clean_txt)
+            pr_m = PRICE_REGEX.search(clean_txt)
             is_st = bool(re.search(r"\bST\s*\||StatTrak", txt, re.IGNORECASE))
 
             items.append({
@@ -424,7 +468,7 @@ async def monitor_skinplace():
                             if "id=" in page.url and "id=" not in target.get("url", ""):
                                 target["url"] = page.url
 
-                            await auto_scroll(page)
+                            await auto_scroll(page, max_scrolls=10)
                             await asyncio.sleep(2.0)
 
                             dom_items = await parse_dom_fallback(page)
@@ -437,6 +481,9 @@ async def monitor_skinplace():
                                 else:
                                     if it.get("is_stattrak"):
                                         merged_items[iid]["is_stattrak"] = True
+                                    # Если в одной из версий (JSON или DOM) нашлась точная цена, сохраняем её
+                                    if merged_items[iid].get("price") == "См. на сайте" and it.get("price") != "См. на сайте":
+                                        merged_items[iid]["price"] = it["price"]
 
                             logging.info(f"Проверен {target['name']} -> найдено лотов: {len(merged_items)}")
 
